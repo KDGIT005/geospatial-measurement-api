@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./geospatial.db
+      - MAX_UPLOAD_SIZE=52428800
+      - UPLOAD_DIR=/tmp/geospatial_uploads
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
