@@ -39,3 +39,7 @@ __MACOSX/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Local freezes
+pip_versions.txt
+
