@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Cubbon Park Bengaluru</name>
+    <description>Sample geospatial features in Bengaluru, India (UTM Zone 43N)</description>
+    <Placemark>
+      <name>Cubbon Park Boundary</name>
+      <description>Major park in Bengaluru central business district</description>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              77.5900,12.9730,0
+              77.5950,12.9730,0
+              77.5950,12.9780,0
+              77.5900,12.9780,0
+              77.5900,12.9730,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+    <Placemark>
+      <name>Kasturba Road Promenade</name>
+      <description>Road running along the edge of Cubbon Park</description>
+      <LineString>
+        <coordinates>
+          77.5900,12.9730,0
+          77.5925,12.9755,0
+          77.5950,12.9780,0
+        </coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name>State Central Library</name>
+      <description>Heritage building inside Cubbon Park</description>
+      <Point>
+        <coordinates>77.5925,12.9750,0</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+</kml>
