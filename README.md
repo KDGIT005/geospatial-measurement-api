@@ -248,38 +248,61 @@ curl -X GET "http://localhost:8000/api/files/e939a44f-aeeb-4d2c-8197-be095f8dd3f
 
 ## 5. Architecture & Flow
 
-### Directory Structure
+### Application Structure
 ```
 geospatial-measurement-api/
 ├── app/
-│   ├── main.py              # Application factory, lifespan, routes & error handlers
+│   ├── main.py              # FastAPI application factory, lifespan, root redirect & error handlers
 │   ├── config.py            # Pydantic Settings (ENV variables & validation)
 │   ├── database.py          # SQLAlchemy 2.0 Engine & session management
 │   ├── models.py            # File and Feature ORM models (sqlalchemy.JSON)
-│   ├── schemas.py           # Pydantic v2 validation models
+│   ├── schemas.py           # Pydantic v2 validation models & OpenAPI schemas
 │   ├── api/
-│   │   └── files.py         # Thin controller/route orchestration
+│   │   └── files.py         # REST controller: file upload, metadata, and measurements
 │   ├── core/
 │   │   └── exceptions.py    # Custom domain exceptions & HTTP mappings
 │   └── services/
 │       ├── file_ingest.py   # Streaming upload, zip extraction, KML/SHP readers
-│       ├── crs.py           # Centroid extraction & UTM zone calculation
+│       ├── crs.py           # Centroid extraction, dynamic UTM zone selection & caching
 │       └── measurements.py  # Projected area/length & geodesic calculations
 ├── tests/
-│   ├── conftest.py          # Fixtures & in-memory test databases
-│   ├── test_crs.py          # UTM zone selection unit tests
+│   ├── conftest.py          # Fixtures, test client, and in-memory test databases
+│   ├── test_crs.py          # UTM zone selection & hemisphere tests
 │   ├── test_measurements.py # Mathematical accuracy & tolerance tests
 │   ├── test_upload.py       # Integration upload tests
-│   └── test_errors.py       # Security, 4xx responses, and boundary tests
+│   └── test_errors.py       # Security (zip-slip/size), 4xx responses, and boundary tests
 ├── samples/                 # Sample KML and zipped Shapefiles
 ├── scripts/                 # Utility scripts (e.g. generate_samples.py)
-├── Dockerfile               # Production container definition
+├── Dockerfile               # Production container definition (Python 3.12-slim)
 ├── docker-compose.yml       # Multi-container orchestration
 ├── requirements.txt         # Pinned production dependencies
 └── pyproject.toml           # Project configuration & Ruff rules
 ```
 
-### Processing Pipeline
+### File-Processing Flow
+1. **Streaming Upload**: File chunks are streamed directly to disk in 64 KB buffers while enforcing `MAX_UPLOAD_SIZE` (50 MB default).
+2. **Format Detection & Security Validation**:
+   - `.kml`: Read directly; validated against XML structure and parsed for all Placemark folders.
+   - `.zip`: Verified for Zip-Slip path traversal (`..` or root paths), Zip-bomb limits (max entries, uncompressed byte ceiling), and inspected for companion files (`.shp`, `.shx`, `.dbf`, `.prj`).
+3. **Feature Ingestion & Fault Isolation**: Features are converted to standard GeoJSON structures. Corrupt or unmeasurable geometries (e.g. `GeometryCollection`, empty geometries) are flagged rather than terminating file processing.
+4. **Database Persistence**: File record is marked `COMPLETED` and features are bulk inserted with associated metadata.
+
+### Measurement Calculation Flow
+1. **Geometry Evaluation**:
+   - `Polygon` / `MultiPolygon` → Compute **Area** ($m^2$)
+   - `LineString` / `MultiLineString` → Compute **Length** ($m$)
+   - `Point` / `MultiPoint` → Valid feature, no measurement required (`measurement: null`)
+2. **Projected Euclidean Calculation**: The geometry is reprojected into the chosen metric projected CRS (UTM). Euclidean formulas (`shapely.area` / `shapely.length`) are applied.
+3. **Geodesic Cross-Verification**: An independent parallel calculation is executed using the WGS84 ellipsoid via `pyproj.Geod(ellps="WGS84")`. Both numbers are returned in the response for full auditability.
+
+### CRS Handling Strategy
+- **Why Degrees Are Never Measured Directly**: Geographic coordinates (`EPSG:4326`) express positions on an oblate spheroid in angular degrees (latitude/longitude). Degrees cannot be converted to physical meters with a single multiplier because $1^\circ$ longitude shrinks from $\approx 111.32\text{ km}$ at the equator to $0\text{ km}$ at the poles by $\cos(\text{latitude})$.
+- **Dynamic Centroid-Based UTM Zone Selection**:
+  1. The feature centroid is calculated in WGS84 ($[\text{lon}, \text{lat}]$).
+  2. UTM Zone is determined: $\text{zone} = \lfloor(\text{lon} + 180)/6\rfloor + 1$.
+  3. Hemisphere determines EPSG code: `EPSG:32601`–`32660` (Northern) or `EPSG:32701`–`32760` (Southern).
+  4. Geometries are transformed from their native CRS to the specific UTM zone via cached `pyproj.Transformer` instances (`always_xy=True`).
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -335,20 +358,35 @@ sequenceDiagram
 
 ---
 
-## 8. What Was Learned
+## 8. Learnings
 
-1. **WGS84 Ellipsoidal vs Spherical Discrepancies**:
-   At the equator, 1 degree of longitude is ~111,319.5 metres, but 1 degree of latitude is ~110,574.4 metres due to the flattening ($f \approx 1/298.257$) of the Earth. Assuming a spherical $111,320\text{ m}$ for latitude produces an immediate ~0.67% error against true geodesic calculations.
-2. **Pyproj Geod and Polygon Holes**:
-   `pyproj.Geod.geometry_area_perimeter()` computes signed areas based on traversal direction. To ensure interior holes are subtracted rather than added, polygons must have explicit winding orientations (exterior counter-clockwise, interior holes clockwise), which is reliably achieved via `shapely.ops.orient(poly, sign=1.0)`.
-3. **GDAL Wheel Distribution**:
-   Pip wheels for `pyogrio` bundle GDAL C-libraries without requiring system-level `apt-get install libgdal-dev`, drastically simplifying container builds while maintaining high C-speed parsing.
+1. **The Fallacy of Measuring in Geographic Degrees (`EPSG:4326`)**:
+   Latitude and longitude are spherical angles, not Cartesian distances. At the equator, $1^\circ$ longitude is $\approx 111,319.5\text{ m}$, whereas at $60^\circ\text{N}$, $1^\circ$ longitude shrinks to $\approx 55,800\text{ m}$. Attempting to calculate Euclidean area directly on geographic coordinates produces nonsensical "square degrees" that cannot be converted to square meters with a static scalar.
+2. **The Web Mercator (`EPSG:3857`) Scale Distortion Trap**:
+   Web Mercator maps (Google Maps, OpenStreetMap) use planar meters, but the conformal projection introduces extreme areal exaggeration proportional to $1/\cos^2(\text{latitude})$. At Bengaluru ($\approx 13^\circ\text{N}$), raw Web Mercator overestimates area by ~5.6%. At $60^\circ\text{N}$, it overestimates area by 400% (4x). Reprojecting to local UTM or calculating geodesics is mandatory for geographic truth.
+3. **WGS84 Ellipsoidal vs Spherical Discrepancies**:
+   Due to the Earth's polar flattening ($f \approx 1/298.257223563$), meridian arc length varies between the equator and the poles. Using a spherical assumption produces systematic errors of up to 0.7%, highlighting why `pyproj.Geod(ellps="WGS84")` is essential as an ellipsoidal reference.
+4. **Ring Orientation & Hole Subtraction in Pyproj Geod**:
+   `pyproj.Geod.geometry_area_perimeter()` computes signed areas based on polygon traversal winding. To guarantee that interior holes are subtracted rather than added, polygons must maintain explicit winding orientations (exterior counter-clockwise, interior holes clockwise). Enforcing `shapely.ops.orient(poly, sign=1.0)` prevents interior holes from artificially inflating the total area.
+5. **GDAL Wheel Distribution & Driver Isolation**:
+   Modern binary wheels for `pyogrio` bundle complete GDAL C-libraries without requiring system-level `apt-get install libgdal-dev`. However, GDAL builds frequently vary in driver compilation (e.g. omitting `LIBKML`). Implementing a dynamic driver check (`pyogrio.list_drivers()`) paired with a robust `lxml` parser ensures zero-dependency resilience across environments.
+6. **Defensive Archive Ingestion**:
+   Handling compressed archives in web services requires active defense against Zip-Slip path traversal attacks (`..` or root absolute paths) and Zip-bomb decompression exhaustion through upfront header inspection and byte limits.
 
 ---
 
 ## 9. Future Scope
 
-1. **Asynchronous Background Processing**: Transition `POST /api/files/` to accept uploads immediately, enqueue processing jobs into a Celery/Redis queue, and allow clients to poll `GET /api/files/{id}/` until status is `COMPLETED`.
-2. **PostGIS Integration**: Add an optional production database backend powered by PostgreSQL + PostGIS, leveraging `ST_Area(geog)` and `ST_Length(geog)` for database-native calculations.
-3. **Automated Topology Repair**: Integrate `shapely.validation.make_valid` to automatically fix self-intersecting bow-tie polygons upon ingest.
-4. **Export Endpoints**: Provide endpoints to export measured datasets back into GeoJSON, Geopackage, or Shapefile formats with computed measurement columns added to the attribute table.
+1. **Asynchronous Task Queue (Celery + Redis)**:
+   For massive spatial files containing tens of thousands of complex polygons, transition `POST /api/files/` to return `202 Accepted` with a job ID, delegating processing to Celery workers and notifying clients via WebSockets or polling.
+2. **Native Spatial Database (PostgreSQL + PostGIS)**:
+   Replace SQLite with PostgreSQL and PostGIS, storing geometries as native `GEOGRAPHY` or `GEOMETRY` types and using GiST spatial indexing with database-level `ST_Area` and `ST_Length`.
+3. **Automated Topology Repair**:
+   Integrate `shapely.make_valid` on ingest to automatically repair invalid, self-intersecting, or non-simple geometries (e.g. bowtie polygons) while logging the repair operations.
+4. **Global Equal-Area & Polar Projections**:
+   Add support for continental or global features that span multiple UTM zones by dynamically selecting Lambert Azimuthal Equal Area (LAEA) or Albers Equal Area, and Universal Polar Stereographic (UPS) for polar geometries ($>84^\circ\text{N}$ / $<80^\circ\text{S}$).
+5. **Export & Format Conversion Endpoints**:
+   Provide `GET /api/files/{id}/export?format={geojson|shapefile|geopackage}` to allow users to download their processed datasets with computed measurement attributes appended to the feature schema.
+6. **Direct Cloud Object Storage Integration**:
+   Support streaming file uploads directly to AWS S3, Google Cloud Storage, or Azure Blob Storage with pre-signed URLs to reduce web server disk and memory loads.
+
