@@ -1,0 +1,21 @@
+[project]
+name = "geospatial-measurement-api"
+version = "1.0.0"
+description = "Backend service for geospatial file measurement"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
+ignore = ["B008"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore:The 'shapely.ops.transform\\(\\)' function is deprecated:DeprecationWarning",
+]
+

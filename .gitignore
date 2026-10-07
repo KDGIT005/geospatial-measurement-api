@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Database
+*.db
+
+# Uploads
+uploads/
+
+# OS
+.DS_Store
+Thumbs.db
+__MACOSX/
+
+# Ruff
+.ruff_cache/
+
+# Pytest
+.pytest_cache/
+htmlcov/
+.coverage
